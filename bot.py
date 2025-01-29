@@ -1,103 +1,88 @@
 import telebot
 import re
+from flask import Flask
+from threading import Thread
 
 API_TOKEN = '7636596309:AAFequmAPe6tb_cTDK3-9V7KQONlBLzHuiU'
 bot = telebot.TeleBot(API_TOKEN)
 
 user_products = {}
 
+# Создаем Flask-сервер для "Keep-Alive"
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "I'm alive!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=10000)
+
+# Запускаем Flask в отдельном потоке
+Thread(target=run_flask).start()
+
 @bot.message_handler(commands=['start'])
 def start(message):
-    try:
-        chat_id = message.chat.id
-        user_products[chat_id] = []
-        bot.send_message(chat_id, "Привет! Введи товары и цены")
-    except Exception as e:
-        handle_error(message, e)
+    chat_id = message.chat.id
+    user_products[chat_id] = []
+    bot.send_message(chat_id, "Привет! Введи товары и цены")
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
+    chat_id = message.chat.id
+
+    if message.text.startswith('/up'):
+        if not user_products.get(chat_id):
+            bot.send_message(chat_id, "Ваш список товаров пуст. Сначала добавьте товары.")
+        else:
+            bot.send_message(chat_id, "Введите сумму наценки:")
+            bot.register_next_step_handler(message, apply_markup)
+        return
+
     try:
-        chat_id = message.chat.id
+        user_products[chat_id] = message.text.split('\n')  # Сохраняем текст с пустыми строками
+        bot.send_message(chat_id, "Товары добавлены. Введите команду /up для изменения цен или добавьте новые товары.")
+    except Exception as e:
+        bot.send_message(chat_id, f"Произошла ошибка: {str(e)}")
 
-        if message.text.startswith('/up'):
-            if not user_products.get(chat_id):
-                bot.send_message(chat_id, "Ваш список товаров пуст. Сначала добавьте товары.")
-            else:
-                bot.send_message(chat_id, "Введите сумму наценки:")
-                bot.register_next_step_handler(message, apply_markup)
-            return
+def apply_markup(message):
+    chat_id = message.chat.id
+    try:
+        markup = float(message.text.replace(',', '.')) / 1000
 
-        items = message.text.split('\n')
-        processed_items = []
-
-        for item in items:
-            if not item.strip():  # Пустая строка
-                processed_items.append({"raw": item, "processed": None})
+        updated_products = []
+        for line in user_products[chat_id]:
+            if not line.strip():  # Если строка пустая, просто добавляем ее обратно
+                updated_products.append("")
                 continue
 
-            match = re.search(r"(.+?)\s*[-:]*\s*(\d+[.,]?\d*)[^\d]*$", item)
+            match = re.search(r"(.+?)\s*[-:]*\s*(\d+[.,]?\d*)[^\d]*$", line)
             if match:
                 name = match.group(1).strip()
                 numeric_price = match.group(2).replace(',', '.')
 
                 try:
                     price_value = float(numeric_price)
-                    processed_items.append({
-                        "raw": item,
-                        "processed": {"name": name, "price": price_value, "raw_price": item}
-                    })
+                    updated_price = price_value + markup
+                    updated_price_str = f"{updated_price:.3f}"
+
+                    updated_line = re.sub(
+                        r"(\d+[.,]?\d*)([^\d]*)$",
+                        lambda m: f"{updated_price_str}{m.group(2)}",
+                        line
+                    )
+                    updated_products.append(updated_line)
                 except ValueError:
-                    bot.send_message(chat_id, f"Строка '{item}' пропущена: не удалось извлечь цену.")
+                    updated_products.append(line)  # Если цена не разобралась, просто оставляем строку как есть
             else:
-                bot.send_message(chat_id, f"Строка '{item}' пропущена: не удалось извлечь название и цену.")
+                updated_products.append(line)  # Если строка не соответствует формату, просто оставляем ее
 
-        user_products[chat_id] = processed_items
-        bot.send_message(chat_id, "Товары добавлены. Введите команду /up для изменения цен или добавьте новые товары.")
-    except Exception as e:
-        handle_error(message, e)
-
-def apply_markup(message):
-    try:
-        chat_id = message.chat.id
-        markup = float(message.text.replace(',', '.')) / 1000
-
-        updated_products = []
-        for product in user_products[chat_id]:
-            if product["processed"] is None:
-                updated_products.append(product["raw"])
-                continue
-
-            updated_price = product["processed"]["price"] + markup
-            updated_price_str = f"{updated_price:.3f}"
-
-            updated_price_with_suffix = re.sub(
-                r"(\d+[.,]?\d*)([^\d]*)$",
-                lambda match: f"{updated_price_str}{match.group(2)}",
-                product["processed"]["raw_price"]
-            )
-            updated_products.append(updated_price_with_suffix)
-
-        bot.send_message(chat_id, "\n" + "\n".join(updated_products))
+        bot.send_message(chat_id, "\n".join(updated_products))  # Отправляем текст, сохраняя пустые строки
         user_products[chat_id] = []
         bot.send_message(chat_id, "Вы можете ввести новые товары.")
     except ValueError:
         bot.send_message(chat_id, "Пожалуйста, введите числовое значение наценки.")
     except Exception as e:
-        handle_error(message, e)
+        bot.send_message(chat_id, f"Произошла ошибка: {str(e)}")
 
-def handle_error(message, error):
-    """
-    Обрабатывает ошибки, чтобы бот не завершал работу.
-    """
-    chat_id = message.chat.id
-    bot.send_message(chat_id, (
-        "Произошла ошибка! 😔\n"
-        f"Описание: {str(error)}\n"
-        "Вы можете вернуться к команде /start или проверить входные данные."
-    ))
-    bot.send_message(chat_id, "Введите /start для начала работы.")
-try:
-    bot.polling()
-except Exception as e:
-    print(f"Ошибка в polling: {e}")
+bot.polling()
