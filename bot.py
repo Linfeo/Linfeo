@@ -1,25 +1,20 @@
 import telebot
 import re
-from flask import Flask
+from flask import Flask, request
 from threading import Thread
+from waitress import serve  # WSGI-сервер для продакшена (Windows + Render)
 
 API_TOKEN = '7636596309:AAFequmAPe6tb_cTDK3-9V7KQONlBLzHuiU'
 bot = telebot.TeleBot(API_TOKEN)
 
 user_products = {}
 
-# Создаем Flask-сервер для "Keep-Alive"
+# Создаем Flask-приложение для "Keep-Alive"
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "I'm alive!"
-
-def run_flask():
-    app.run(host="0.0.0.0", port=10000)
-
-# Запускаем Flask в отдельном потоке
-Thread(target=run_flask).start()
 
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -40,7 +35,7 @@ def handle_message(message):
         return
 
     try:
-        user_products[chat_id] = message.text.split('\n')  # Сохраняем текст с пустыми строками
+        user_products[chat_id] = message.text.splitlines(keepends=True)  # Сохраняем форматирование с пустыми строками
         bot.send_message(chat_id, "Товары добавлены. Введите команду /up для изменения цен или добавьте новые товары.")
     except Exception as e:
         bot.send_message(chat_id, f"Произошла ошибка: {str(e)}")
@@ -52,8 +47,8 @@ def apply_markup(message):
 
         updated_products = []
         for line in user_products[chat_id]:
-            if not line.strip():  # Если строка пустая, просто добавляем ее обратно
-                updated_products.append("")
+            if line.strip() == "":  # Оставляем пустые строки без изменений
+                updated_products.append(line)
                 continue
 
             match = re.search(r"(.+?)\s*[-:]*\s*(\d+[.,]?\d*)[^\d]*$", line)
@@ -73,11 +68,11 @@ def apply_markup(message):
                     )
                     updated_products.append(updated_line)
                 except ValueError:
-                    updated_products.append(line)  # Если цена не разобралась, просто оставляем строку как есть
+                    updated_products.append(line)  # Если цена не разобралась, оставляем строку без изменений
             else:
-                updated_products.append(line)  # Если строка не соответствует формату, просто оставляем ее
+                updated_products.append(line)  # Если строка не содержит цену, просто оставляем ее
 
-        bot.send_message(chat_id, "\n".join(updated_products))  # Отправляем текст, сохраняя пустые строки
+        bot.send_message(chat_id, "".join(updated_products))  # Возвращаем текст с пустыми строками
         user_products[chat_id] = []
         bot.send_message(chat_id, "Вы можете ввести новые товары.")
     except ValueError:
@@ -85,4 +80,7 @@ def apply_markup(message):
     except Exception as e:
         bot.send_message(chat_id, f"Произошла ошибка: {str(e)}")
 
-bot.polling()
+# Запускаем Flask-сервер через WSGI (waitress)
+if __name__ == "__main__":
+    Thread(target=bot.polling, kwargs={"none_stop": True}).start()  # Бот работает в фоновом режиме
+    serve(app, host="0.0.0.0", port=10000)  # Flask работает через waitress (продакшен-сервер)
